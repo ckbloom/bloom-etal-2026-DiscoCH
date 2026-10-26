@@ -12,7 +12,7 @@ was just summarized isn't counted again. Every date is moved onto the
 common year 2000 (a leap year, so 29 Feb is safe) to line the seasons up.
 
   - layout="overlay": everything on one axis; the colour shows the region
-    and the line style/marker the year (with one region, colour = year).
+    and the line style the year (with one region, colour = year).
   - layout="panels": one panel per region, with the years in the same
     colours in every panel -- easier to read than an overlay of many
     districts.
@@ -49,17 +49,26 @@ import pandas as pd
 from src.disco_ch_operational.disco_statistics import TOTAL, discoloration_stats
 
 LINESTYLES = ["-", "--", "-.", ":"]
-MARKERS = ["o", "s", "^", "D", "v", "P"]
 
 
 def rc_params(font_scale=1.4):
-    """matplotlib rcParams for larger text (12 pt x font_scale) on white."""
+    """matplotlib rcParams for larger text (12 pt x font_scale), black on
+    white. The foreground colours are set too, so a dark IDE/notebook theme
+    (white text and axes) can't leave them invisible on the white background."""
+    from cycler import cycler
+    from matplotlib import colormaps
+
     base = 12 * font_scale
     return {
         "font.size": base, "axes.titlesize": base * 1.35, "axes.labelsize": base * 1.15,
         "xtick.labelsize": base, "ytick.labelsize": base, "legend.fontsize": base,
         "legend.title_fontsize": base, "figure.titlesize": base * 1.5,
         "figure.facecolor": "white", "axes.facecolor": "white", "savefig.facecolor": "white",
+        "text.color": "black", "axes.labelcolor": "black", "axes.titlecolor": "black",
+        "axes.edgecolor": "black", "xtick.color": "black", "ytick.color": "black",
+        "grid.color": "#b0b0b0", "legend.facecolor": "white", "legend.edgecolor": "0.8",
+        "legend.labelcolor": "black", "savefig.edgecolor": "white",
+        "axes.prop_cycle": cycler(color=colormaps["tab10"].colors),
     }
 
 
@@ -84,7 +93,8 @@ def collect_stats(datasets, threshold=4000, zones=None, zone_field="bzname", **s
 
 def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bzname", regions=None,
                          layout="overlay", ncols=3, font_scale=1.4, value="proportion",
-                         title=None, output_dir=None, output_name=None, show=True, **stats_kw):
+                         title=None, output_dir=None, output_name=None, show=True, linestyles=None,
+                         **stats_kw):
     """Plots `value` of each dataset against month/day.
 
     :param datasets: {label: DataFrame or dict(mosaic_dir, pattern, year,
@@ -94,8 +104,13 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
         40 %).
     :param zones, zone_field: zone layer for the datasets counted here.
     :param regions: region names to plot (e.g. ["All", "Bezirk Aarau"]);
-        None = those present in every dataset (just "All" unless every
-        dataset was counted with the same zones).
+        None = those present in every dataset: "All" plus every zone when
+        all datasets were counted with the same zones, else just "All".
+        In an overlay "All" is drawn in black.
+    :param linestyles: {label: line style} per dataset, e.g. {"2018": "--"}
+        (default: "-", "--", "-.", ":" in order). In an overlay of several
+        regions the colour is the region and the line style the dataset,
+        with a separate legend for each.
     :param layout: "overlay" (one axis) or "panels" (one per region).
     :param ncols: panels per row.
     :param font_scale: text size relative to 12 pt.
@@ -114,7 +129,7 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
     labels = [str(k) for k in datasets]
     if regions is None:
         common = set.intersection(*(set(stats.loc[stats.dataset == lab, "zone"]) for lab in labels))
-        regions = [TOTAL] if TOTAL in common else sorted(common)
+        regions = ([TOTAL] if TOTAL in common else []) + sorted(common - {TOTAL})
     else:
         regions = [regions] if isinstance(regions, str) else list(regions)
         missing = {(lab, r) for lab in labels for r in regions
@@ -130,10 +145,13 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
     ylabel = {"proportion": "Beech forest discolored",
               "discolored_ha": "Discolored beech forest (ha)"}.get(value, value)
 
-    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    colors = rc_params()["axes.prop_cycle"].by_key()["color"]
     year_color = {lab: colors[i % len(colors)] for i, lab in enumerate(labels)}
-    region_color = {r: colors[i % len(colors)] for i, r in enumerate(regions)}
-    year_style = {lab: (LINESTYLES[i % len(LINESTYLES)], MARKERS[i % len(MARKERS)])
+    zone_names = [r for r in regions if r != TOTAL]
+    region_color = {r: colors[i % len(colors)] for i, r in enumerate(zone_names)}
+    region_color[TOTAL] = "black"
+    linestyles = linestyles or {}
+    year_style = {lab: linestyles.get(lab, LINESTYLES[i % len(LINESTYLES)])
                   for i, lab in enumerate(labels)}
 
     with plt.rc_context(rc_params(font_scale)):
@@ -154,12 +172,12 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
                 d = data[(data.dataset == lab) & (data.zone == r)].sort_values("season_date")
                 if d.empty:
                     continue
-                ls, mk = year_style[lab]
+                ls = year_style[lab]
                 if layout == "panels" or len(regions) == 1:
-                    kw = dict(color=year_color[lab], marker="o", linestyle="-", label=lab)
+                    kw = dict(color=year_color[lab], linestyle=ls, label=lab)
                 else:
-                    kw = dict(color=region_color[r], marker=mk, linestyle=ls, label=f"{r} ({lab})")
-                ax.plot(d.season_date, d[value], linewidth=2, markersize=6, **kw)
+                    kw = dict(color=region_color[r], linestyle=ls, label=f"{r} ({lab})")
+                ax.plot(d.season_date, d[value], linewidth=2, **kw)
             if layout == "panels" and len(regions) > 1:
                 ax.set_title(r)
 
@@ -183,9 +201,19 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
             ax.set_title(heading + (f"\n({thr})" if thr else ""))
             ax.set_xlabel("Date (month/day)")
             ax.set_ylabel(ylabel)
-            many = len(regions) > 1 and len(regions) * len(labels) > 10
-            ax.legend(loc="upper left", bbox_to_anchor=(1.01, 1) if many else None,
-                      frameon=False if many else True)
+            if len(regions) > 1:
+                # two legends: colour = region, line style = dataset
+                from matplotlib.lines import Line2D
+                reg = ax.legend([Line2D([], [], color=region_color[r], linewidth=2) for r in regions],
+                                regions, title="Region", loc="upper left", bbox_to_anchor=(1.01, 1),
+                                frameon=False)
+                ax.add_artist(reg)
+                ax.legend([Line2D([], [], color="0.3", linewidth=2, linestyle=year_style[lab])
+                           for lab in labels],
+                          labels, title="Dataset", loc="lower left", bbox_to_anchor=(1.01, 0),
+                          frameon=False, handlelength=3)
+            else:
+                ax.legend(loc="upper left")
         else:
             fig.suptitle(heading + (f" ({thr})" if thr else ""))
             fig.supxlabel("Date (month/day)")
