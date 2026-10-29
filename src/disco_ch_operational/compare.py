@@ -50,6 +50,24 @@ from src.disco_ch_operational.disco_statistics import TOTAL, discoloration_stats
 
 LINESTYLES = ["-", "--", "-.", ":"]
 
+# Biogeographic regions (DERegionNa of N2020_Revision_BiogeoRegion.shp): English names and colours
+BIOGEO_NAMES_EN = {
+    "Jura": "Jura",
+    "Mittelland": "Plateau",
+    "Alpennordflanke": "Northern Pre-Alps",
+    "Alpensüdflanke": "Southern Pre-Alps",
+    "Östliche Zentralalpen": "Eastern Central Alps",
+    "Westliche Zentralalpen": "Western Central Alps",
+}
+BIOGEO_COLORS = {
+    "Jura": "#cadde2",
+    "Plateau": "#e3c575",
+    "Northern Pre-Alps": "#e1885e",
+    "Southern Pre-Alps": "#cb5d58",
+    "Eastern Central Alps": "#5c80af",
+    "Western Central Alps": "#7ea3b9",
+}
+
 
 def rc_params(font_scale=1.4):
     """matplotlib rcParams for larger text (12 pt x font_scale), black on
@@ -94,6 +112,7 @@ def collect_stats(datasets, threshold=4000, zones=None, zone_field="bzname", **s
 def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bzname", regions=None,
                          layout="overlay", ncols=3, font_scale=1.4, value="proportion",
                          title=None, output_dir=None, output_name=None, show=True, linestyles=None,
+                         colors=None, region_names=None, region_colors=None, guides=True,
                          **stats_kw):
     """Plots `value` of each dataset against month/day.
 
@@ -111,6 +130,16 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
         (default: "-", "--", "-.", ":" in order). In an overlay of several
         regions the colour is the region and the line style the dataset,
         with a separate legend for each.
+    :param colors: {label: colour} per dataset, e.g. {"2018": "0.55"}
+        (default: tab10). Used where the colour is the dataset (one region,
+        panels) and in the dataset legend of a region overlay.
+    :param region_names: {zone name: display name}, e.g. BIOGEO_NAMES_EN;
+        applied to the table first, so `regions` and region_colors use the
+        display names.
+    :param region_colors: {region: colour}, e.g. BIOGEO_COLORS; its order is
+        the legend order. Other regions get tab10 colours.
+    :param guides: light vertical guide lines at the month starts and the
+        15th.
     :param layout: "overlay" (one axis) or "panels" (one per region).
     :param ncols: panels per row.
     :param font_scale: text size relative to 12 pt.
@@ -126,10 +155,14 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
     import matplotlib.ticker as mtick
 
     stats = collect_stats(datasets, threshold, zones, zone_field, **stats_kw)
+    if region_names:
+        stats["zone"] = stats["zone"].replace(region_names)
+    region_colors = dict(region_colors or {})
     labels = [str(k) for k in datasets]
     if regions is None:
         common = set.intersection(*(set(stats.loc[stats.dataset == lab, "zone"]) for lab in labels))
-        regions = ([TOTAL] if TOTAL in common else []) + sorted(common - {TOTAL})
+        regions = (([TOTAL] if TOTAL in common else []) + [r for r in region_colors if r in common]
+                   + sorted(common - {TOTAL} - set(region_colors)))
     else:
         regions = [regions] if isinstance(regions, str) else list(regions)
         missing = {(lab, r) for lab in labels for r in regions
@@ -145,10 +178,12 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
     ylabel = {"proportion": "Beech forest discolored",
               "discolored_ha": "Discolored beech forest (ha)"}.get(value, value)
 
-    colors = rc_params()["axes.prop_cycle"].by_key()["color"]
-    year_color = {lab: colors[i % len(colors)] for i, lab in enumerate(labels)}
-    zone_names = [r for r in regions if r != TOTAL]
-    region_color = {r: colors[i % len(colors)] for i, r in enumerate(zone_names)}
+    palette = rc_params()["axes.prop_cycle"].by_key()["color"]
+    colors = colors or {}
+    year_color = {lab: colors.get(lab, palette[i % len(palette)]) for i, lab in enumerate(labels)}
+    zone_names = [r for r in regions if r != TOTAL and r not in region_colors]
+    region_color = {r: palette[i % len(palette)] for i, r in enumerate(zone_names)}
+    region_color.update(region_colors)
     region_color[TOTAL] = "black"
     linestyles = linestyles or {}
     year_style = {lab: linestyles.get(lab, LINESTYLES[i % len(LINESTYLES)])
@@ -190,6 +225,10 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
                 ax.yaxis.set_major_formatter(mtick.PercentFormatter(1.0, decimals=0))
             ax.set_ylim(bottom=0)
             ax.grid(axis="y", linestyle="--", alpha=0.3)
+            if guides:
+                ax.grid(axis="x", which="major", color="0.8", linewidth=0.8)
+                ax.grid(axis="x", which="minor", color="0.9", linewidth=0.6)
+                ax.set_axisbelow(True)
             for lab in ax.get_xticklabels():
                 lab.set_rotation(45)
                 lab.set_ha("right")
@@ -202,16 +241,19 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
             ax.set_xlabel("Date (month/day)")
             ax.set_ylabel(ylabel)
             if len(regions) > 1:
-                # two legends: colour = region, line style = dataset
+                # two untitled legends in the plot: colour = region, line style = dataset
                 from matplotlib.lines import Line2D
-                reg = ax.legend([Line2D([], [], color=region_color[r], linewidth=2) for r in regions],
-                                regions, title="Region", loc="upper left", bbox_to_anchor=(1.01, 1),
-                                frameon=False)
+                small = plt.rcParams["legend.fontsize"] * 0.85
+                reg = ax.legend([Line2D([], [], color=region_color[r], linewidth=3) for r in regions],
+                                regions, loc="upper left", fontsize=small)
                 ax.add_artist(reg)
-                ax.legend([Line2D([], [], color="0.3", linewidth=2, linestyle=year_style[lab])
+                # dataset legend just right of the region legend (curves are still low there)
+                fig.canvas.draw()
+                right = ax.transAxes.inverted().transform(reg.get_window_extent())[1, 0]
+                ax.legend([Line2D([], [], color=year_color[lab], linewidth=2, linestyle=year_style[lab])
                            for lab in labels],
-                          labels, title="Dataset", loc="lower left", bbox_to_anchor=(1.01, 0),
-                          frameon=False, handlelength=3)
+                          labels, loc="upper left", bbox_to_anchor=(right + 0.01, 1),
+                          fontsize=small, handlelength=3)
             else:
                 ax.legend(loc="upper left")
         else:

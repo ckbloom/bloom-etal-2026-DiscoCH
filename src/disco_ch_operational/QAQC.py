@@ -420,8 +420,10 @@ def calibration_table(df, strata, pixel_area_ha=0.01):
 
 
 def accuracy_table(df, strata, thresholds=None, pixel_area_ha=0.01):
-    """Per date and threshold t (map discoloured = probability >= t):
-    stratified accuracy, precision, recall, F1 and areas, with SEs."""
+    """Per date and threshold t (map discoloured = probability >= t): the
+    confusion matrix (TP, FP, FN, TN point counts, and their area-weighted
+    shares w_TP ... w_TN, which sum to 1), stratified accuracy, precision,
+    recall, F1 and areas, with SEs."""
     thresholds = np.round(np.arange(0.05, 0.96, 0.05), 2) if thresholds is None else thresholds
     rows = []
     for date, g in df.groupby("date"):
@@ -435,8 +437,11 @@ def accuracy_table(df, strata, thresholds=None, pixel_area_ha=0.01):
             ua, ua_se = _strat_ratio(g, m * ref, m, s)          # precision = P(ref=1 | map=1)
             pa, pa_se = _strat_ratio(g, m * ref, ref, s)        # recall = P(map=1 | ref=1)
             map_share, _ = _strat_mean(g, m, s)
+            cells = {"TP": m * ref, "FP": m * (1 - ref), "FN": (1 - m) * ref, "TN": (1 - m) * (1 - ref)}
             rows.append(dict(
                 date=date, threshold=t, n=len(g), n_map_discolored=int(m.sum()),
+                **{k: int(v.sum()) for k, v in cells.items()},
+                **{f"w_{k}": _strat_mean(g, v, s)[0] for k, v in cells.items()},
                 accuracy=oa, accuracy_se=oa_se,
                 precision=ua, precision_se=ua_se,
                 recall=pa, recall_se=pa_se,
@@ -511,8 +516,11 @@ def qaqc_assess(labels, key, summary=None, label_col="label", thresholds=None,
                (raw and area-weighted, metrics per confidence); None = skip it
 
     Returns (calibration, accuracy) DataFrames; with outdir, also writes
-    qaqc_calibration_<date>.csv, qaqc_accuracy_<date>.csv, qaqc_<date>.png and
-    qaqc_report_<date>_t<threshold>.png. With a filter, the file names get a
+    qaqc_calibration_<date>.csv, qaqc_accuracy_<date>.csv (with the confusion
+    matrix of every threshold), qaqc_<date>.png and, at `threshold`,
+    qaqc_confusion_<date>_t<threshold>.csv (confusion matrix per confidence
+    subset: counts, weighted shares + SE, areas), qaqc_metrics_<date>_t<threshold>.csv
+    and qaqc_report_<date>_t<threshold>.png. With a filter, the file names get a
     suffix (e.g. _conf2_nonotes) so the unfiltered results are not overwritten.
     """
     df, strata = _labelled_sample(labels, key, label_col, summary, layer,
@@ -538,6 +546,10 @@ def qaqc_assess(labels, key, summary=None, label_col="label", thresholds=None,
         for date in cal["date"].unique():  # one file per date, named like the plots
             cal[cal["date"] == date].to_csv(out / f"qaqc_calibration_{date}{tag}.csv", index=False)
             acc[acc["date"] == date].to_csv(out / f"qaqc_accuracy_{date}{tag}.csv", index=False)
+            if conf is not None:
+                for k in ("confusion", "metrics"):
+                    conf[k][conf[k]["date"] == date].to_csv(
+                        out / f"qaqc_{k}_{date}_t{threshold}{tag}.csv", index=False)
     for date in cal["date"].unique():
         a = acc[acc["date"] == date]
         best = a.loc[a["f1"].idxmax()]
@@ -987,18 +999,18 @@ if __name__ == '__main__':
     #                                       regions=cantons, region_col="ktnr",
     #                                       dataset=dataset, outdir=recall_dir)
     #
-    # # the labelled points of qa_dir scored against another model's maps (same design, its probabilities)
-    # qa_dir = r"B:\bloomc\DiscoCH_2026_08_03\DiscoCH_2026_Operational\output\DiscoCH_rbf_10_20_30\2026\proba_validation_test"
-    # nrt_dir = r"B:\bloomc\DiscoCH_2026_08_03\DiscoCH_2026_Operational\output\DiscoCH_rbf_10_20_30\2026\masked"
-    # key_lr = rescore_key(qa_dir + r"\sample_key.csv", nrt_dir,
-    #                      outfile=nrt_dir + r"\proba_validation\sample_key.csv")
-    # cal, acc = qaqc_assess(qa_dir + r"\labeling_points.gpkg", key_lr,
-    #                        summary=qa_dir + r"\strata_summary.csv",
-    #                        layer="all",  # Disco_Proba_2026-07-10
-    #                        combine_dates=True,  # also all dates in one pot ("only" = just that)
-    #                        threshold=0.4, min_confidence=2, # exclude_notes=True,
-    #                        outdir=qa_dir + r"\proba_validation_nrt")
-    #
+    # the labelled points of qa_dir scored against another model's maps (same design, its probabilities)
+    qa_dir = r"B:\bloomc\DiscoCH_2026_08_03\DiscoCH_2026_Operational\output\DiscoCH_rbf_10_20_30\2026\proba_validation_test"
+    nrt_dir = r"B:\bloomc\DiscoCH_2026_08_03\DiscoCH_2026_Operational\output\DiscoCH_rbf_10_20_30\2026\masked"
+    key_lr = rescore_key(qa_dir + r"\sample_key.csv", nrt_dir,
+                         outfile=nrt_dir + r"\proba_validation\sample_key.csv")
+    cal, acc = qaqc_assess(qa_dir + r"\labeling_points.gpkg", key_lr,
+                           summary=qa_dir + r"\strata_summary.csv",
+                           layer="all",  # Disco_Proba_2026-07-10
+                           combine_dates=True,  # also all dates in one pot ("only" = just that)
+                           threshold=0.4, min_confidence=1, # exclude_notes=True,
+                           outdir=qa_dir + r"\proba_validation_nrt")
+
     #
     # the labelled points of qa_dir scored against another model's maps (same design, its probabilities)
     qa_dir = r"B:\bloomc\DiscoCH_2026_08_03\DiscoCH_2026_Operational\output\DiscoCH_rbf_10_20_30\2026\proba_validation_test"
@@ -1009,5 +1021,5 @@ if __name__ == '__main__':
                            summary=qa_dir + r"\strata_summary.csv",
                            layer="all", # Disco_Proba_2026-07-10
                            combine_dates=True,  # also all dates in one pot ("only" = just that)
-                           threshold=0.4, min_confidence=2, exclude_notes=True,
+                           threshold=0.4, min_confidence=1, # exclude_notes=True,
                            outdir=qa_dir + r"\proba_validation_retrospective")
